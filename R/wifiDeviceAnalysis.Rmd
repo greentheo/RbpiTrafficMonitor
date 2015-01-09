@@ -30,7 +30,7 @@ library(knitr)
 #data = read.csv('../data/capture2014-10-28_21.23.00wireshark.csv')
 data = read.csv('../data/capture2014-10-29.csv')
 #data= read.csv('../data/capture2014-10-30.csv')
-data$Time = ymd_hms(data$Time)
+data$Time = ymd_hms(as.character(data$Time))
 data[["Ident"]] = (gsub("_.*$","",data$Source))
 
 
