@@ -1,0 +1,196 @@
+---
+title: "WIFI Based Traffic Counting"
+output: html_document
+---
+
+
+Recently we were asked us to prove whether or not we could quickly, efficiently and discreetly help a city identify traffic patterns in and out of the main drag. 
+
+And do it cheaply.
+
+Using our knowledge of wifi based IP protocols and our mad hacking skills we took one of these (a Raspberry Pi): 
+
+![Raspberry PI](http://www.adafruit.com/blog/wp-content/uploads/2012/05/pi1.jpg)
+
+And turned it into a cellphone/wifi detector capable of logging hundreds of cellphones (as long as their wifi was on) per second.
+
+## Conclusion
+
+Yes, for < $200 you can kick off a 2 node Rbpi based network of wifi sniffers capable of logging wifi traffic in and out of the city.
+
+It works really well, is robost and easy to monitor traffic, traffic speeds, and directions.
+
+
+```{r echo=FALSE,warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(knitr)
+
+#data = read.csv('../data/capture2014-10-28_21.23.00wireshark.csv')
+data = read.csv('../data/capture2014-10-29.csv')
+#data= read.csv('../data/capture2014-10-30.csv')
+data$Time = ymd_hms(data$Time)
+data[["Ident"]] = (gsub("_.*$","",data$Source))
+
+
+
+detPerDeviceAll = data %.% 
+  group_by(Source) %.%
+  summarise(detections=n(),
+            TimeActive=(max((Time))-min((Time)))/eminutes(1)) 
+              
+detPerIdentAll = data %.%
+  group_by(Ident) %.%
+  summarise(detections=n(),
+            uniques = length(unique(Source)))
+
+detMinAll = data %.% 
+  group_by(Time=floor_date(Time, "minute")) %.%
+  summarise(uniques=length(unique(Source)),
+            detections=n(),
+            timeActive=mean(max((Time))-min((Time)))/ehours(1))
+
+detMinIdent = data %.% 
+  group_by(Ident, Time=floor_date(Time, "minute")) %.%
+  summarise(uniques=length(unique(Source)),
+            detections=n())
+
+detHourAll = data %.% 
+  group_by(Time=floor_date(Time, "hour")) %.%
+  summarise(uniques=length(unique(Source)),
+            detections=n())
+
+detHourIdent = data %.% 
+  group_by(Ident, Time=floor_date(Time, "hour")) %.%
+  summarise(uniques=length(unique(Source)),
+            detections=n())
+
+
+
+```
+
+# The experiment
+
+## Basic stats
+
+*  Unique Devices: `r length(unique(data$Source))`
+*  Length of Data Collection (hours): `r (max(data$Time)-min(data$Time))/ehours(1)`
+*  Median Number of Detections per Device: `r quantile(detPerDeviceAll$detections, .5)`
+*  Active Time (minutes) per Device (50th, 75th and 95th quantiles): `r quantile(detPerDeviceAll$TimeActive, c(.5, .75, .95))`
+*  Unique Brand Identifiers: `r nrow(subset(detPerIdentAll, uniques>1))`
+*  Median number of Devices per Brand Identifier: `r quantile(subset(detPerIdentAll, uniques>1)$uniques, .5)`
+
+## Unique Counts per Device Type (Stationary, Pedestrian, Vehicle)
+
+```{r echo=FALSE, results='asis'}
+hourFreq = data %.%
+  group_by(Source, roundTime=round_date(Time, "second")) %.%
+  summarize(freq=1) %.%
+  group_by(Source, round_date(roundTime, "minute")) %.%
+  summarize(freq=n()) %.%
+  group_by(Source) %.%
+  summarize(freq=mean(freq)) %.%
+  mutate(type=ifelse(freq<=1.6, "car", ifelse(freq<=3,"pedestrian","stationary")))%.%
+  group_by(type) %.%
+  summarize(uniques=n())
+
+kable(hourFreq, format='markdown')
+
+```
+
+## Unique Counts per Brand Identifier (Top Counts shown only)
+
+```{r echo=FALSE, results='asis'}
+kable(x = subset(detPerIdentAll[with(detPerIdentAll, order(-uniques)),], uniques>4), format='markdown')
+
+```
+
+
+## Identifying Stationary, Pedestrians and Cars
+
+Can we detect whether a device is stationary (and local to the detector?), or Wether it might be a pedestrian walking by... or a vechicle zooming by?
+
+```{r echo=FALSE}
+
+# log-normal detection counts per hour
+# group all probe requests in 1 second as a single request (since they might be probing for multiple networks)
+
+hourFreq = data %.%
+  group_by(Source, roundTime=round_date(Time, "second")) %.%
+  summarize(freq=1) %.%
+  group_by(Source, round_date(roundTime, "minute")) %.%
+  summarize(freq=n()) 
+  
+ggplot(hourFreq, aes(x=log(freq)))+geom_histogram(stat="density")+
+  labs(title="Probe Requests per Minute Density Plot",x="Log(probes/minute)")
+
+hourFreq = hourFreq %.%
+  group_by(Source) %.%
+  summarize(freq=mean(freq))
+
+ggplot(hourFreq, aes(x=log(freq)))+geom_histogram(stat="density")+
+  labs(title="Probe Requests per Minute Average Per Unique Device Density Plot",x="Log(probes/minute)")
+
+
+```
+
+Yes, traffic is likely to have between 0 and 1.6 (exp(.5)) detections as they drive by.  While it's not easy to eyeball, a rule of thumb might be to classify foot traffic as between 1.6 and 3 per minute (exp(.5) to exp(1)).  And anything greater than 3 as stationary devices.
+
+More work should be done to more fully detect stationary vs. non-stationary traffic, but for now this is a good rule of thumb.
+
+
+```{r echo=FALSE}
+
+```
+
+## Uniques per Minute
+
+The following plot demonstrates unique traffic (primarily cars) as they drive into and out of the city center.  It is clear that there is a regular pattern of influx and outflux beginning in the morning, dying off during the day, and picking back up in the evening.
+
+
+```{r echo=FALSE}
+ggplot(detMinAll, aes(x=Time, y=uniques))+
+  geom_line()+
+  labs(title="Uniques per Minute")
+
+#ggplot(detMinAll, aes(x=Time, y=uniques))+
+#  geom_line()+
+#  labs(title="Uniques/Detections per Minute")
+
+```
+
+## Uniques per Hour
+
+```{r echo=FALSE}
+ggplot(detHourAll, aes(x=Time, y=uniques))+
+  geom_line()+
+  labs(title="Uniques per Hour")
+
+#ggplot(detHourAll, aes(x=Time, y=uniques))+
+#  geom_line()+
+#  labs(title="Uniques/Detections per Hour")
+
+```
+
+
+
+## Uniques by Identifier
+
+```{r echo=FALSE}
+
+ggplot(subset(detHourIdent, Ident %in% subset(detPerIdentAll, uniques>4)$Ident),
+       aes(x=Time, y=uniques, color=Ident, fill=Ident))+
+  geom_area()+
+  labs(title="Unique Devices with Identifier per Hour")
+
+```
+
+
+# TBD
+
+* Calibrate with actual counts (where possible)
+
+# Conclusions
+
+It has been shown that an inexpensive device can reliably detect and log unique traffic counts into and out of the city center. 
